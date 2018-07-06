@@ -17,7 +17,7 @@
 }(function (L) {
 "use strict";
 
-L.Polyline._flat = L.Polyline._flat || function (latlngs) {
+L.Polyline._flat = L.LineUtil.isFlat || L.Polyline._flat || function (latlngs) {
     // true if it's a flat array of latlngs; false if nested
     return !L.Util.isArray(latlngs[0]) || (typeof latlngs[0][0] !== 'object' && typeof latlngs[0][0] !== 'undefined');
 };
@@ -175,15 +175,15 @@ L.GeometryUtil = L.extend(L.GeometryUtil || {}, {
         var latlngs,
             mindist = Infinity,
             result = null,
-            i, n, distance;
+            i, n, distance, subResult;
 
         if (layer instanceof Array) {
             // if layer is Array<Array<T>>
             if (layer[0] instanceof Array && typeof layer[0][0] !== 'number') {
                 // if we have nested arrays, we calc the closest for each array
                 // recursive
-                for (var i = 0; i < layer.length; i++) {
-                    var subResult = L.GeometryUtil.closest(map, layer[i], latlng, vertices);
+                for (i = 0; i < layer.length; i++) {
+                    subResult = L.GeometryUtil.closest(map, layer[i], latlng, vertices);
                     if (subResult.distance < mindist) {
                         mindist = subResult.distance;
                         result = subResult;
@@ -218,17 +218,16 @@ L.GeometryUtil = L.extend(L.GeometryUtil || {}, {
                         addLastSegment(latlngs[i]);
                     }
                 }
-            }
+            };
             addLastSegment(latlngs);
         }
 
         // we have a multi polygon / multi polyline / polygon with holes
         // use recursive to explore and return the good result
         if ( ! L.Polyline._flat(latlngs) ) {
-
-            for (var i = 0; i < latlngs.length; i++) {
+            for (i = 0; i < latlngs.length; i++) {
                 // if we are at the lower level, and if we have a L.Polygon, we add the last segment
-                var subResult = L.GeometryUtil.closest(map, latlngs[i], latlng, vertices);
+                subResult = L.GeometryUtil.closest(map, latlngs[i], latlng, vertices);
                 if (subResult.distance < mindist) {
                     mindist = subResult.distance;
                     result = subResult;
@@ -336,7 +335,7 @@ L.GeometryUtil = L.extend(L.GeometryUtil || {}, {
             if (layer instanceof L.LayerGroup) {
                 // recursive
                 var subResult = L.GeometryUtil.closestLayer(map, layer.getLayers(), latlng);
-                results.push(subResult)
+                results.push(subResult);
             } else {
                 // Single dimension, snap on points, else snap on closest
                 if (typeof layer.getLatLng == 'function') {
@@ -347,7 +346,7 @@ L.GeometryUtil = L.extend(L.GeometryUtil || {}, {
                     ll = L.GeometryUtil.closest(map, layer, latlng);
                     if (ll) distance = ll.distance;  // Can return null if layer has no points.
                 }
-                results.push({layer: layer, latlng: ll, distance: distance})
+                results.push({layer: layer, latlng: ll, distance: distance});
             }
         }
 
@@ -492,26 +491,28 @@ L.GeometryUtil = L.extend(L.GeometryUtil || {}, {
         }
 
         var ratioDist = lineLength * ratio;
-        var a = pts[0],
-            b = pts[1],
-            distA = 0,
-            distB = a.distanceTo(b);
-        // follow the line segments [ab], adding lengths,
+
+		// follow the line segments [ab], adding lengths,
         // until we find the segment where the points should lie on
-        var index = 1;
-        for (; index < n && distB < ratioDist; index++) {
-            a = b;
-            distA = distB;
-            b = pts[index];
-            distB += a.distanceTo(b);
-        }
-        // compute the ratio relative to the segment [ab]
-        var segmentRatio = ((distB - distA) !== 0) ? ((ratioDist - distA) / (distB - distA)) : 0;
-        var interpolatedPoint = L.GeometryUtil.interpolateOnPointSegment(a, b, segmentRatio);
-        return {
-            latLng: map.unproject(interpolatedPoint, maxzoom),
-            predecessor: index-2
-        };
+		var cumulativeDistanceToA = 0, cumulativeDistanceToB = 0;
+		for (var i = 0; cumulativeDistanceToB < ratioDist; i++) {
+			var pointA = pts[i], pointB = pts[i+1];
+
+			cumulativeDistanceToA = cumulativeDistanceToB;
+			cumulativeDistanceToB += pointA.distanceTo(pointB);
+		}
+		
+		if (pointA == undefined && pointB == undefined) { // Happens when line has no length
+			var pointA = pts[0], pointB = pts[1], i = 1;
+		}
+
+		// compute the ratio relative to the segment [ab]
+		var segmentRatio = ((cumulativeDistanceToB - cumulativeDistanceToA) !== 0) ? ((ratioDist - cumulativeDistanceToA) / (cumulativeDistanceToB - cumulativeDistanceToA)) : 0;
+		var interpolatedPoint = L.GeometryUtil.interpolateOnPointSegment(pointA, pointB, segmentRatio);
+		return {
+			latLng: map.unproject(interpolatedPoint, maxzoom),
+			predecessor: i-1
+		};
     },
 
     /**
@@ -703,8 +704,8 @@ L.GeometryUtil = L.extend(L.GeometryUtil || {}, {
        Returns the point that is a distance and heading away from
        the given origin point.
        @param {L.LatLng} latlng: origin point
-       @param {float}: heading in degrees, clockwise from 0 degrees north.
-       @param {float}: distance in meters
+       @param {float} heading: heading in degrees, clockwise from 0 degrees north.
+       @param {float} distance: distance in meters
        @returns {L.latLng} the destination point.
        Many thanks to Chris Veness at http://www.movable-type.co.uk/scripts/latlong.html
        for a great reference and examples.
@@ -728,7 +729,37 @@ L.GeometryUtil = L.extend(L.GeometryUtil || {}, {
         lon2 = lon2 * radInv;
         lon2 = lon2 > 180 ? lon2 - 360 : lon2 < -180 ? lon2 + 360 : lon2;
         return L.latLng([lat2 * radInv, lon2]);
-    }
+    },
+
+    /**
+       Returns the the angle of the given segment and the Equator in degrees,
+       clockwise from 0 degrees north.
+       @param {L.Map} map: Leaflet map to be used for this method
+       @param {L.LatLng} latlngA: geographical point A of the segment
+       @param {L.LatLng} latlngB: geographical point B of the segment
+       @returns {Float} the angle in degrees.
+    */
+    angle: function(map, latlngA, latlngB) {
+      var pointA = map.latLngToContainerPoint(latlngA),
+          pointB = map.latLngToContainerPoint(latlngB),
+          angleDeg = Math.atan2(pointB.y - pointA.y, pointB.x - pointA.x) * 180 / Math.PI + 90;
+      angleDeg += angleDeg < 0 ? 360 : 0;
+      return angleDeg;
+    },
+
+    /**
+       Returns a point snaps on the segment and heading away from the given origin point a distance.
+       @param {L.Map} map: Leaflet map to be used for this method
+       @param {L.LatLng} latlngA: geographical point A of the segment
+       @param {L.LatLng} latlngB: geographical point B of the segment
+       @param {float} distance: distance in meters
+       @returns {L.latLng} the destination point.
+    */
+    destinationOnSegment: function(map, latlngA, latlngB, distance) {
+      var angleDeg = L.GeometryUtil.angle(map, latlngA, latlngB),
+          latlng = L.GeometryUtil.destination(latlngA, angleDeg, distance);
+      return L.GeometryUtil.closestOnSegment(map, latlng, latlngA, latlngB);
+    },
 });
 
 return L.GeometryUtil;

@@ -49,7 +49,14 @@ Changelog
 
 ### master ###
 
-Nothing yet.
+### 0.9.0 ###
+
+* Fix `interpolateOnLine()` doesn't return correct predecessor (#66, thanks @jb2b38)
+* Add `angle()` and `destinationOnSegment()` (#71, thanks @trandaison)
+
+### 0.8.1 ###
+
+* Remove a deprecated function in Leaflet 1.x (#69)
 
 ### 0.8.0 ###
 
